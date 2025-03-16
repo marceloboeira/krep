@@ -475,28 +475,28 @@ void test_stress(void) {
         printf("Failed to allocate memory for stress test (this is normal for systems with limited RAM)\n");
         return;
     }
-    
+
     printf("Successfully allocated %zu MB for stress test\n", size / (1024 * 1024));
-    
+
     /* Fill with pseudorandom data using a fixed seed for reproducibility */
     srand(42);
     for (size_t i = 0; i < size; i++) {
         large_text[i] = 'a' + (rand() % 26);
     }
     large_text[size] = '\0';
-    
+
     /* Insert known patterns at specific intervals */
     const char *pattern = "UNIQUEPATTERN";
     size_t pattern_len = strlen(pattern);
     int expected_matches = 0;
-    
+
     for (size_t i = 1000000; i < size; i += 5000000) {
         if (i + pattern_len < size) {
             memcpy(large_text + i, pattern, pattern_len);
             expected_matches++;
         }
     }
-    
+
     printf("Inserted %d instances of pattern '%s' in the text\n", expected_matches, pattern);
     
     /* Perform searches with each algorithm and verify results */

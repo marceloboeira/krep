@@ -16,10 +16,10 @@ LDFLAGS =
 ifeq ($(ENABLE_ARCH_DETECTION),1)
     # Detect OS first
     OS := $(shell uname -s)
-    
+
     # Detect architecture type
     ARCH := $(shell uname -m)
-    
+
     # Special case for PowerPC Macs which return "Power Macintosh" from uname -m
     ifeq ($(OS),Darwin)
         ifeq ($(ARCH),Power Macintosh)
@@ -27,7 +27,7 @@ ifeq ($(ENABLE_ARCH_DETECTION),1)
             ARCH := $(shell uname -p)
         endif
     endif
-    
+
     # x86/x86_64 uses -march=native
     ifneq (,$(filter x86_64 i386 i686,$(ARCH)))
         # Check for SIMD support on x86/x86_64
@@ -39,7 +39,7 @@ ifeq ($(ENABLE_ARCH_DETECTION),1)
             CFLAGS += -mavx2
         endif
     endif
-    
+
     # PowerPC uses -mcpu=native
     ifneq (,$(filter ppc ppc64 powerpc powerpc64,$(ARCH)))
         # Check for SIMD support on PowerPC
@@ -47,25 +47,30 @@ ifeq ($(ENABLE_ARCH_DETECTION),1)
             CFLAGS += -maltivec
         endif
     endif
-    
-    # ARM detection
-    ifneq (,$(filter arm arm64 aarch64,$(ARCH)))
-        # Special case for Apple Silicon (macOS on ARM)
-        ifneq (,$(filter Darwin,$(OS)))
-            # Apple Silicon has NEON by default, no need for special flags
-            # Just define the feature macro if needed
-            CFLAGS += -D__ARM_NEON
-        else
-            # For other ARM platforms (Linux, etc.), try to use appropriate flags
-            ifeq ($(shell $(CC) -mcpu=native -dM -E - < /dev/null 2>/dev/null | grep -q '__ARM_NEON' && echo yes),yes)
-                # Different ARM platforms may use different flag syntax
-                ifneq (,$(filter arm,$(ARCH)))
-                    CFLAGS += -mfpu=neon
-                endif
-                # For arm64/aarch64, NEON is typically standard and doesn't need -mfpu
-            endif
-        endif
-    endif
+
+		# ARM detection
+		ifneq (,$(filter arm arm64 aarch64,$(ARCH)))
+				# Special case for Apple Silicon (macOS on ARM)
+				ifneq (,$(filter Darwin,$(OS)))
+						# Apple Silicon has NEON by default, no need for special flags
+						CFLAGS += -D__ARM_NEON
+				else
+						# For other ARM platforms (Linux, etc.), try to use appropriate flags
+						ifeq ($(shell $(CC) -dM -E - < /dev/null 2>/dev/null | grep -q '__ARM_NEON' && echo yes),yes)
+								CFLAGS += -D__ARM_NEON
+								# Different ARM platforms may use different flag syntax
+								ifneq (,$(filter arm,$(ARCH)))
+										CFLAGS += -mfpu=neon -mfloat-abi=hard
+								endif
+						endif
+						# Check for SVE on ARM64
+						ifeq ($(filter aarch64 arm64,$(ARCH)))
+								ifeq ($(shell $(CC) -march=native -dM -E - < /dev/null 2>/dev/null | grep -q '__ARM_FEATURE_SVE' && echo yes),yes)
+										CFLAGS += -march=armv8-a+sve -D__ARM_FEATURE_SVE
+								endif
+						endif
+				endif
+		endif
 endif
 
 SRC = krep.c
