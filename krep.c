@@ -563,120 +563,62 @@ uint64_t neon_search(const char *text, size_t text_len,
                     bool case_sensitive) {
     uint64_t match_count = 0;
 
-    // Fall back to other algorithms for patterns that are too small/large
     if (pattern_len <= 2 || pattern_len > 16 || text_len < pattern_len) {
         return boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive);
     }
 
-    if (!case_sensitive) {
-        // Precompute lowercase pattern once
-        char lower_pattern[16] = {0};
-        for (size_t i = 0; i < pattern_len; i++) {
-            lower_pattern[i] = lower_table[(unsigned char)pattern[i]];
+    // Precompute lowercase pattern if needed
+    char lower_pattern[16] = {0};
+    for (size_t i = 0; i < pattern_len; i++) {
+        lower_pattern[i] = case_sensitive ? pattern[i] : lower_table[(unsigned char)pattern[i]];
+    }
+
+    uint8x16_t pattern_vec = vld1q_u8((const uint8_t*)lower_pattern);
+    size_t i = 0;
+
+    while (i + 31 < text_len - pattern_len) { // Process 32 bytes at a time
+        __builtin_prefetch(&text[i + 64], 0, 1); // Prefetch next chunk
+
+        // Load two 16-byte blocks
+        uint8x16x2_t text_vec = vld1q_u8_x2((const uint8_t *)(text + i));
+
+        if (!case_sensitive) {
+            // Fast case conversion using lookup table
+            text_vec.val[0] = vqtbl1q_u8(vld1q_u8((const uint8_t *)lower_table), text_vec.val[0]);
+            text_vec.val[1] = vqtbl1q_u8(vld1q_u8((const uint8_t *)lower_table), text_vec.val[1]);
         }
 
-        // Process text with NEON instructions for case-insensitive search
-        size_t i = 0;
-        while (i <= text_len - pattern_len) {
-            bool match = true;
+        // Compare both 16-byte blocks
+        uint8x16_t cmp_result1 = vceqq_u8(pattern_vec, text_vec.val[0]);
+        uint8x16_t cmp_result2 = vceqq_u8(pattern_vec, text_vec.val[1]);
 
-            // Optimize using 8-bit NEON operations when we have enough data
-            if (text_len - i >= 16) {
-                // Create pattern vector
-                uint8x16_t pattern_vec = vld1q_u8((const uint8_t*)lower_pattern);
+        uint64x2_t mask1 = vreinterpretq_u64_u8(cmp_result1);
+        uint64x2_t mask2 = vreinterpretq_u64_u8(cmp_result2);
 
-                // Load text chunk
-                uint8x16_t text_vec = vld1q_u8((const uint8_t*)(text + i));
+        uint64_t result1 = vgetq_lane_u64(mask1, 0);
+        uint64_t result2 = vgetq_lane_u64(mask2, 0);
 
-                // Convert to lowercase on-the-fly
-                // First, create mask for uppercase letters (A-Z = 0x41-0x5A)
-                uint8x16_t upper_mask = vcgtq_u8(text_vec, vdupq_n_u8('A' - 1));
-                uint8x16_t lower_mask = vcltq_u8(text_vec, vdupq_n_u8('Z' + 1));
-                uint8x16_t alpha_mask = vandq_u8(upper_mask, lower_mask);
+        uint64_t pattern_mask = (1ULL << (pattern_len * 8)) - 1;
 
-                // Set bit 5 (0x20) for found uppercase letters to convert to lowercase
-                uint8x16_t bit5_mask = vdupq_n_u8(0x20);
-                uint8x16_t case_bits = vandq_u8(alpha_mask, bit5_mask);
+        if ((result1 & pattern_mask) == pattern_mask) match_count++;
+        if ((result2 & pattern_mask) == pattern_mask) match_count++;
 
-                // Apply case conversion
-                uint8x16_t lower_text = vorrq_u8(text_vec, case_bits);
+        i += 32; // Move forward by 32 bytes
+    }
 
-                // Compare the first 'pattern_len' bytes
-                uint8x16_t cmp_result = vceqq_u8(pattern_vec, lower_text);
-
-                // Extract results for pattern_len bytes
-                uint64x2_t mask = vreinterpretq_u64_u8(cmp_result);
-
-                // Check if we have a match for the pattern length
-                uint64_t result = vgetq_lane_u64(mask, 0);
-
-                // For patterns smaller than 8 bytes, we use just the first lane
-                uint64_t pattern_mask = (1ULL << (pattern_len * 8)) - 1;
-
-                if ((result & pattern_mask) != pattern_mask) {
-                    // No match, move ahead
-                    match = false;
-                }
-            } else {
-                // Fall back to scalar comparison for the final bytes
-                for (size_t j = 0; j < pattern_len; j++) {
-                    char tc = lower_table[(unsigned char)text[i + j]];
-                    char pc = lower_table[(unsigned char)pattern[j]];
-                    if (tc != pc) {
-                        match = false;
-                        break;
-                    }
-                }
+    // Process remaining bytes with scalar fallback
+    while (i <= text_len - pattern_len) {
+        bool match = true;
+        for (size_t j = 0; j < pattern_len; j++) {
+            char tc = case_sensitive ? text[i + j] : lower_table[(unsigned char)text[i + j]];
+            char pc = lower_pattern[j];
+            if (tc != pc) {
+                match = false;
+                break;
             }
-
-            if (match) {
-                match_count++;
-            }
-            i++;
         }
-    } else {
-        // Case-sensitive search
-        size_t i = 0;
-        while (i <= text_len - pattern_len) {
-            bool match = true;
-
-            // Use NEON for aligned 16-byte chunks
-            if (text_len - i >= 16) {
-                // Create pattern vector
-                uint8x16_t pattern_vec = vld1q_u8((const uint8_t*)pattern);
-
-                // Load text chunk
-                uint8x16_t text_vec = vld1q_u8((const uint8_t*)(text + i));
-
-                // Compare the first pattern_len bytes
-                uint8x16_t cmp_result = vceqq_u8(pattern_vec, text_vec);
-
-                // Extract results for pattern_len bytes
-                uint64x2_t mask = vreinterpretq_u64_u8(cmp_result);
-
-                uint64_t result = vgetq_lane_u64(mask, 0);
-
-                // For patterns smaller than 8 bytes, we use just the first lane
-                uint64_t pattern_mask = (1ULL << (pattern_len * 8)) - 1;
-
-                if ((result & pattern_mask) != pattern_mask) {
-                    // No match, move ahead
-                    match = false;
-                }
-            } else {
-                // Fall back to scalar comparison for the final bytes
-                for (size_t j = 0; j < pattern_len; j++) {
-                    if (text[i + j] != pattern[j]) {
-                        match = false;
-                        break;
-                    }
-                }
-            }
-            if (match) {
-                match_count++;
-            }
-            i++;
-        }
+        if (match) match_count++;
+        i++;
     }
 
     return match_count;
